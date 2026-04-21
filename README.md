@@ -1,19 +1,31 @@
 # mmseqs_ccc
 
-基于 MMseqs2 全对全比对结果，对蛋白质序列进行连通分量聚类的 C++ 程序。
+基于 MMseqs2 全对全比对结果，对蛋白质序列进行连通分量聚类的 C++ 工具集，包含两个独立程序：
+
+- **`mmseqs_ccc`**：并行连通分量聚类，输出簇成员关系表
+- **`extract_cluster`**：按簇代表序列名提取成员的比对结果，支持自定义输出字段
 
 ## 背景
 
-本程序用于处理 MMseqs2 `filterdb` 过滤后的比对结果数据库（`filtered_db`），通过并查集（Union-Find）算法将具有同源关系的蛋白质序列归并为连通分量，输出聚类结果。
+本工具集用于处理 MMseqs2 `filterdb` 过滤后的比对结果数据库（`filtered_db`）：
 
-## 使用方法
+1. `mmseqs_ccc` 通过并查集（Union-Find）算法将具有同源关系的蛋白质序列归并为连通分量，输出聚类结果（`filtered_db_clusters.tsv`）。
+2. `extract_cluster` 读取聚类结果，按指定的簇代表序列名提取所有成员的比对记录，输出格式类似 `mmseqs convertalis --format-output`，支持 `qcov`、`tcov`、`bits` 等字段。
 
-### 编译
+## 编译
 
 ```bash
 cmake -DCMAKE_BUILD_TYPE=Release -B build_release
-cmake --build build_release --target mmseqs_ccc -j 8
+cmake --build build_release -j 8
 ```
+
+编译后生成：
+- `build_release/mmseqs_ccc`
+- `build_release/extract_cluster`
+
+---
+
+## mmseqs_ccc — 连通分量聚类
 
 ### 运行
 
@@ -32,7 +44,6 @@ cmake --build build_release --target mmseqs_ccc -j 8
 **示例：**
 
 ```bash
-# 后台运行，输出日志
 nohup ./build_release/mmseqs_ccc \
     /data/filtered_db \
     /data/protein_db.lookup \
@@ -42,23 +53,149 @@ nohup ./build_release/mmseqs_ccc \
 tail -f clustering.log
 ```
 
+### 输出
+
+`<filtered_db前缀>_clusters.tsv`（制表符分隔，两列）：
+
+```
+cluster_rep    member
+WP_000001234.1    WP_000001234.1
+WP_000001234.1    WP_000005678.1
+WP_000001234.1    WP_000009012.1
+WP_000099999.1    WP_000099999.1
+...
+```
+
+- 每个蛋白质恰好出现一次（在第二列）。
+- 同一聚类的所有成员共享相同的第一列（代表序列）。
+- 单例蛋白质的两列相同。
+
+---
+
+## extract_cluster — 提取簇比对结果
+
+### 运行
+
+```bash
+./build_release/extract_cluster [OPTIONS] <rep_name> [rep_name2 ...]
+```
+
+**参数说明：**
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `<rep_name>` | 簇代表序列名（`_clusters.tsv` 第一列），可指定多个 | 必填 |
+| `--db <path>` | filtered_db 路径前缀 | `test/filtered_db` |
+| `--lookup <path>` | MMseqs2 lookup 文件路径 | `<db目录>/protein_db.lookup` |
+| `--clusters <path>` | 聚类结果 TSV 文件路径 | `<db前缀>_clusters.tsv` |
+| `--format <fmt>` | 输出字段，逗号分隔（见下表） | 见下方默认值 |
+| `--sep <char>` | 输出字段分隔符 | `\t`（制表符） |
+| `--out <path>` | 输出文件路径 | 标准输出 |
+| `--header` | 输出表头行 | 否 |
+
+**默认 `--format`：**
+
+```
+query,target,fident,alnlen,mismatch,gapopen,qstart,qend,qlen,qcov,tstart,tend,tlen,tcov,evalue,bits
+```
+
+**可用字段：**
+
+| 字段 | 说明 |
+|------|------|
+| `query` | 查询序列名 |
+| `target` | 目标序列名 |
+| `fident` | 序列一致性（0–1） |
+| `alnlen` | 比对长度（`max(|qend-qstart|, |tend-tstart|) + 1`，有 backtrace 时用 cigar 精确计算） |
+| `mismatch` | 错配数（无 backtrace 时为近似值） |
+| `gapopen` | gap 开启次数（无 backtrace 时为 0） |
+| `qstart` | 查询起始位置（0-based） |
+| `qend` | 查询终止位置（0-based） |
+| `qlen` | 查询序列长度 |
+| `qcov` | 查询覆盖度（`(qend-qstart)/qlen`） |
+| `tstart` | 目标起始位置（0-based） |
+| `tend` | 目标终止位置（0-based） |
+| `tlen` | 目标序列长度 |
+| `tcov` | 目标覆盖度（`(tend-tstart)/tlen`） |
+| `evalue` | E 值 |
+| `bits` | Bit score |
+
+> **注意：** `alnlen`、`mismatch`、`gapopen` 在无 backtrace 的数据库（`mmseqs search` 未加 `-a`）中为近似值：
+> - `alnlen` = `max(|qend-qstart|, |tend-tstart|) + 1`（与 mmseqs2 `Matcher::computeAlnLength()` 一致）
+> - `mismatch` = `min(|qend-qstart|, |tend-tstart|) × (1 - fident)`（与 mmseqs2 `convertalignments.cpp` 一致）
+> - `gapopen` = 0
+>
+> 若需精确值，请在 `mmseqs search` 时加 `-a` 参数生成带 backtrace 的数据库。
+
+**示例：**
+
+```bash
+# 提取单个簇，输出到文件，带表头
+./build_release/extract_cluster \
+    --db /data/filtered_db \
+    --lookup /data/protein_db.lookup \
+    --clusters /data/filtered_db_clusters.tsv \
+    --header \
+    --out cluster_WP001.tsv \
+    "WP_000001234.1"
+
+# 同时提取多个簇，自定义字段
+./build_release/extract_cluster \
+    --db /data/filtered_db \
+    --format "query,target,fident,evalue,qcov,tcov,bits" \
+    "WP_000001234.1" "WP_000099999.1"
+```
+
+---
+
+## 上游数据生成流程
+
+```bash
+# 1. 建库
+mmseqs createdb bacterial.fasta protein_db
+
+# 2. 全对全搜索（加 -a 可获得精确 alnlen/mismatch/gapopen）
+mmseqs search protein_db protein_db result_db tmp \
+    -s 7.0 --min-seq-id 0.3 -c 0.5 --min-aln-len 60 \
+    --cov-mode 0 -e 0.001 --max-seqs 10000 --threads 56 -a
+
+# 3. 过滤（保留 E 值 ≤ 1e-10 的比对）
+mmseqs filterdb result_db filtered_db \
+    --comparison-operator le --filter-column 4 \
+    --comparison-value 1e-10 --threads 56
+
+# 4. 聚类
+./build_release/mmseqs_ccc /data/filtered_db /data/protein_db.lookup 56
+
+# 5. 提取指定簇的比对结果
+./build_release/extract_cluster \
+    --db /data/filtered_db \
+    --header \
+    "WP_000001234.1"
+```
+
+---
+
 ## 输入文件格式
 
 ### filtered_db（MMseqs2 分片数据库）
 
 由 MMseqs2 `filterdb` 命令生成，包含以下文件：
 
-- `filtered_db.0`、`filtered_db.1`、…、`filtered_db.N`：数据分片，每个分片为二进制格式，内部按查询序列分块存储比对结果。
+- `filtered_db.0`、`filtered_db.1`、…、`filtered_db.N`：数据分片，二进制格式，内部按查询序列分块存储比对结果。
 - `filtered_db.index`：全局索引文件，每行三列（制表符分隔）：
   ```
   query_id    global_offset    block_length
   ```
+- `filtered_db.dbtype`：数据库类型标识文件。
 
-每个数据块内，每行为一条比对记录（制表符分隔）：
+每个数据块内，每行为一条比对记录（制表符分隔，10 或 11 列）：
 
 ```
-target_id  seq_id  aln_len  mismatches  gap_opens  q_start  q_end  t_start  t_end  evalue  bitscore
+target_id  score  fident  evalue  qstart  qend  qlen  tstart  tend  tlen  [cigar]
 ```
+
+其中 `cigar` 列仅在 `mmseqs search -a` 时存在。
 
 ### protein_db.lookup
 
@@ -68,9 +205,11 @@ MMseqs2 lookup 文件，每行两列（制表符分隔）：
 sequence_id    sequence_name
 ```
 
-用于将内部整数 ID 映射回原始序列名称（如 `WP_000001234.1`）。
+用于将内部整数 ID 映射回原始序列名称。
 
-## 算法设计
+---
+
+## 算法设计（mmseqs_ccc）
 
 ### 总体流程
 
@@ -83,12 +222,12 @@ sequence_id    sequence_name
        ↓
 多线程并行读取各分片，提取比对边
        ↓
-加锁批量写入并查集（Union-Find）
+无锁并查集（atomic CAS）合并连通分量
        ↓
 收集连通分量，统计并输出聚类结果
 ```
 
-### 1. 分片文件映射
+### 分片文件映射
 
 MMseqs2 的 `filterdb` 输出使用全局偏移量（`global_offset`）索引所有查询，但数据实际分散在多个分片文件中。程序通过以下方式将全局偏移量映射到具体分片：
 
@@ -103,76 +242,22 @@ MMseqs2 的 `filterdb` 输出使用全局偏移量（`global_offset`）索引所
    local_offset = global_offset - cum_sizes[fid]
    ```
 
-### 2. 顺序 I/O 优化
+### 顺序 I/O 优化
 
 将每个分片内的查询按 `local_offset` 升序排序后再读取，确保对每个分片文件的访问是严格顺序的，最大化磁盘 I/O 效率（对 HDD 尤为重要）。
 
-### 3. 并行处理
+### 并行处理
 
 使用 C++11 `std::thread` 实现工作线程池：
 
-- 主线程创建 `num_threads` 个工作线程。
 - 各线程通过原子计数器 `next_file`（`std::atomic<int>`）竞争获取下一个待处理的分片编号，实现动态负载均衡。
-- 每个线程独立打开并顺序读取其负责的分片文件，将解析出的 `(query_id, target_id)` 边对收集到线程本地的 `edges` 向量中。
-- 处理完一个分片后，线程持有 `std::mutex` 锁，将本地 `edges` 批量写入全局并查集，然后释放锁，继续处理下一个分片。
+- 并查集使用无锁原子 CAS 操作（`compare_exchange`）实现并发合并，无需全局锁。
 
-这种"先本地收集、再批量加锁"的策略显著减少了锁竞争次数。
+### 并查集（Union-Find / DSU）
 
-### 4. 并查集（Union-Find / DSU）
+使用路径压缩（路径减半）+ 按秩合并的无锁并查集（基于 `std::atomic<int>`），时间复杂度接近 O(α(n))。
 
-使用路径压缩（路径减半）+ 按秩合并的并查集，时间复杂度接近 O(α(n))（反阿克曼函数，实际近似 O(1)）：
-
-```cpp
-struct DSU {
-    std::vector<int> parent, rank_;
-
-    int find(int x) {
-        while (parent[x] != x) {
-            parent[x] = parent[parent[x]]; // 路径减半
-            x = parent[x];
-        }
-        return x;
-    }
-
-    void unite(int a, int b) {
-        a = find(a); b = find(b);
-        if (a == b) return;
-        if (rank_[a] < rank_[b]) std::swap(a, b);
-        parent[b] = a;
-        if (rank_[a] == rank_[b]) rank_[a]++;
-    }
-};
-```
-
-并查集大小为 `id2name.size()`（即 lookup 文件中的序列总数），初始化时每个节点的父节点指向自身。
-
-### 5. 连通分量收集与输出
-
-所有分片处理完毕后：
-
-1. 遍历 lookup 文件中所有已知序列 ID，调用 `dsu.find(id)` 获取其根节点，按根节点分组，得到所有连通分量。
-2. 统计聚类数量、最大聚类大小、单例数量。
-3. 将结果写入 `<filtered_db前缀>_clusters.tsv`，格式为制表符分隔的两列：
-   ```
-   cluster_representative_name    member_name
-   ```
-   每个序列恰好出现在一行的第二列，第一列为其所在聚类的代表序列（根节点对应的序列名称）。
-
-## 输出文件
-
-`filtered_db_clusters.tsv`（制表符分隔）：
-
-```
-WP_000001234.1    WP_000001234.1
-WP_000001234.1    WP_000005678.1
-WP_000001234.1    WP_000009012.1
-WP_000099999.1    WP_000099999.1
-...
-```
-
-- 每个蛋白质恰好出现一次（在第二列）。
-- 同一聚类的所有成员共享相同的第一列（代表序列）。
-- 单例蛋白质的两列相同。
+---
 
 ## 资源需求
 
@@ -191,22 +276,3 @@ WP_000099999.1    WP_000099999.1
 - POSIX 系统（Linux/macOS）
 - CMake 3.10+
 - pthreads（通过 `find_package(Threads)` 链接）
-
-## 上游数据生成流程
-
-本程序处理的数据由以下 MMseqs2 流程生成：
-
-```bash
-# 1. 建库
-mmseqs createdb bacterial.fasta protein_db --threads 8
-
-# 2. 全对全搜索
-mmseqs search protein_db protein_db result_db tmp \
-    -s 7.0 --min-seq-id 0.3 -c 0.5 --min-aln-len 60 \
-    --cov-mode 0 -e 0.001 --max-seqs 10000 --threads 8
-
-# 3. 过滤（保留 E值 ≤ 1e-10 的比对）
-mmseqs filterdb result_db filtered_db \
-    --comparison-operator le --filter-column 4 \
-    --comparison-value 1e-10 --threads 8
-```
