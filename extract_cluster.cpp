@@ -27,10 +27,12 @@ static void print_usage(const char* prog) {
         "  --db        <path>  DB prefix (default: test/filtered_db)\n"
         "  --lookup    <path>  Lookup file (default: test/protein_db.lookup)\n"
         "  --clusters  <path>  Clusters TSV (default: <db>_clusters.tsv)\n"
-        "  --format    <fmt>   Output format string (default: query,target,fident,alnlen,evalue,qstart,qend,qlen,tstart,tend,tlen,qcov,tcov)\n"
+        "  --format    <fmt>   Output format string (default: query,target,fident,alnlen,mismatch,gapopen,qstart,qend,qlen,qcov,tstart,tend,tlen,tcov,evalue,bits)\n"
         "                      Available fields: query target fident alnlen evalue\n"
         "                                        qstart qend qlen tstart tend tlen\n"
         "                                        qcov tcov mismatch gapopen bits\n"
+        "                      Note: alnlen/mismatch/gapopen require DB built with 'mmseqs search -a'.\n"
+        "                            mismatch is approximate (fident stored at 3 decimal precision).\n"
         "  --sep       <char>  Output field separator (default: tab)\n"
         "  --out       <path>  Output file (default: stdout)\n"
         "  --header            Print header line\n"
@@ -61,13 +63,40 @@ struct IndexEntry {
 };
 
 // ---------------------------------------------------------------------------
+// Parse cigar string to compute alnlen and gapopen
+// cigar format: e.g. "88M3D242M1I10M"
+// M = match/mismatch column, D = deletion (gap in query), I = insertion (gap in target)
+// alnlen  = sum of all M+D+I lengths
+// gapopen = number of D runs + number of I runs
+// ---------------------------------------------------------------------------
+static void parse_cigar(const char* s, const char* e, int& alnlen, int& gapopen) {
+    alnlen  = 0;
+    gapopen = 0;
+    int num = 0;
+    for (const char* p = s; p < e; ++p) {
+        char c = *p;
+        if (c >= '0' && c <= '9') {
+            num = num * 10 + (c - '0');
+        } else {
+            if (num == 0) num = 1;
+            if (c == 'M' || c == 'D' || c == 'I') {
+                alnlen += num;
+                if (c == 'D' || c == 'I') gapopen++;
+            }
+            num = 0;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Alignment record (raw fields from DB)
-// col: target_id alnlen fident evalue qstart qend qlen tstart tend tlen
+// Internal mmseqs2 format: target_id score fident evalue qstart qend qlen tstart tend tlen [cigar]
+// score = bit score (as computed by evaluer->computeBitScore)
 // ---------------------------------------------------------------------------
 struct AlnRecord {
     int    query_id;
     int    target_id;
-    int    alnlen;
+    int    raw_score;  // bit score (mmseqs2 evaluer->computeBitScore result)
     double fident;
     double evalue;
     int    qstart;
@@ -76,6 +105,10 @@ struct AlnRecord {
     int    tstart;
     int    tend;
     int    tlen;
+    // derived from cigar (if available, else -1)
+    int    alnlen;
+    int    gapopen;
+    int    mismatch;
 };
 
 // ---------------------------------------------------------------------------
@@ -94,7 +127,7 @@ static void write_record(std::FILE* out,
         if (f == "query")    std::fputs(qname.c_str(), out);
         else if (f == "target")   std::fputs(tname.c_str(), out);
         else if (f == "fident")   std::fprintf(out, "%.3f", r.fident);
-        else if (f == "alnlen")   std::fprintf(out, "%d", r.alnlen);
+        else if (f == "alnlen")   { if (r.alnlen >= 0) std::fprintf(out, "%d", r.alnlen); else std::fputs("N/A", out); }
         else if (f == "evalue")   std::fprintf(out, "%g", r.evalue);
         else if (f == "qstart")   std::fprintf(out, "%d", r.qstart);
         else if (f == "qend")     std::fprintf(out, "%d", r.qend);
@@ -110,9 +143,9 @@ static void write_record(std::FILE* out,
             double tcov = r.tlen > 0 ? (double)(r.tend - r.tstart) / r.tlen : 0.0;
             std::fprintf(out, "%.4f", tcov);
         }
-        else if (f == "mismatch") std::fputs("N/A", out);
-        else if (f == "gapopen")  std::fputs("N/A", out);
-        else if (f == "bits")     std::fputs("N/A", out);
+        else if (f == "mismatch") { if (r.mismatch >= 0) std::fprintf(out, "%d", r.mismatch); else std::fputs("N/A", out); }
+        else if (f == "gapopen")  { if (r.gapopen >= 0) std::fprintf(out, "%d", r.gapopen); else std::fputs("N/A", out); }
+        else if (f == "bits")     std::fprintf(out, "%d", r.raw_score);
         else std::fputs(f.c_str(), out); // unknown field: output as-is
     }
     std::fputc('\n', out);
@@ -142,7 +175,7 @@ int main(int argc, char* argv[]) {
     std::string db_prefix    = "test/filtered_db";
     std::string lookup_path  = "";
     std::string clusters_path = "";
-    std::string format_str   = "query,target,fident,alnlen,evalue,qstart,qend,qlen,tstart,tend,tlen,qcov,tcov";
+    std::string format_str   = "query,target,fident,alnlen,mismatch,gapopen,qstart,qend,qlen,qcov,tstart,tend,tlen,tcov,evalue,bits";
     std::string sep          = "\t";
     std::string out_path     = "";
     bool print_header        = false;
@@ -390,8 +423,8 @@ int main(int argc, char* argv[]) {
                 const char* lend = p;
                 while (lend < end && *lend != '\n') ++lend;
 
-                // Parse 10 tab-separated fields:
-                // target_id alnlen fident evalue qstart qend qlen tstart tend tlen
+                // Parse 10 or 11 tab-separated fields:
+                // target_id raw_score fident evalue qstart qend qlen tstart tend tlen [cigar]
                 auto next_tab = [](const char* s, const char* e) -> const char* {
                     while (s < e && *s != '\t') ++s;
                     return s;
@@ -417,12 +450,15 @@ int main(int argc, char* argv[]) {
                 const char* f9e = next_tab(f9, lend);
                 const char* f10 = f9e < lend ? f9e + 1 : lend;
                 const char* f10e = next_tab(f10, lend);
+                // optional 11th field: cigar
+                const char* f11 = f10e < lend ? f10e + 1 : lend;
+                const char* f11e = next_tab(f11, lend);
 
                 if (f1e > f1) {
                     AlnRecord r;
                     r.query_id  = e.query_id;
                     r.target_id = (int)std::strtol(f1, nullptr, 10);
-                    r.alnlen    = (int)std::strtol(f2, nullptr, 10);
+                    r.raw_score = (int)std::strtol(f2, nullptr, 10);
                     r.fident    = std::strtod(f3, nullptr);
                     r.evalue    = std::strtod(f4, nullptr);
                     r.qstart    = (int)std::strtol(f5, nullptr, 10);
@@ -431,6 +467,31 @@ int main(int argc, char* argv[]) {
                     r.tstart    = (int)std::strtol(f8, nullptr, 10);
                     r.tend      = (int)std::strtol(f9, nullptr, 10);
                     r.tlen      = (int)std::strtol(f10, nullptr, 10);
+                    // alnlen = max(|qend-qstart|, |tend-tstart|) + 1  (mmseqs2 Matcher::computeAlnLength)
+                    {
+                        int dq = r.qend - r.qstart; if (dq < 0) dq = -dq;
+                        int dt = r.tend - r.tstart; if (dt < 0) dt = -dt;
+                        r.alnlen = (dq > dt ? dq : dt) + 1;
+                    }
+                    // parse cigar if present: get precise gapopen; mismatch from cigar
+                    if (f11 < f11e) {
+                        int cigar_alnlen = 0;
+                        parse_cigar(f11, f11e, cigar_alnlen, r.gapopen);
+                        // use cigar alnlen if available (more accurate)
+                        r.alnlen = cigar_alnlen;
+                        int nident = (int)(r.fident * r.alnlen + 0.5);
+                        r.mismatch = r.alnlen - nident - r.gapopen;
+                        if (r.mismatch < 0) r.mismatch = 0;
+                    } else {
+                        r.gapopen  = 0;
+                        // mismatch: mmseqs2 uses min(|qend-qstart|, |tend-tstart|) * (1-seqId) + 0.5
+                        // (same as convertalignments.cpp line 447-448, no backtrace branch)
+                        int dq = r.qend - r.qstart; if (dq < 0) dq = -dq;
+                        int dt = r.tend - r.tstart; if (dt < 0) dt = -dt;
+                        float bestMatchEstimate = (float)(dq < dt ? dq : dt);
+                        r.mismatch = (int)(bestMatchEstimate * (1.0f - (float)r.fident) + 0.5f);
+                        if (r.mismatch < 0) r.mismatch = 0;
+                    }
 
                     const std::string& tname = id2name.count(r.target_id) ? id2name[r.target_id] : std::to_string(r.target_id);
                     write_record(fout, r, qname, tname, fields, sep);
