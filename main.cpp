@@ -175,7 +175,7 @@ int main(int argc, char* argv[]) {
                 if (!p) continue;
                 while (p < end && (*p == ' ' || *p == '\t')) ++p;
                 const char* name_start = p;
-                while (p < end && *p != '\r' && *p != '\n') ++p;
+                while (p < end && *p != '\r' && *p != '\n' && *p != '\t') ++p;
                 if (id + 1 > max_id) max_id = id + 1;
                 id_name_pairs.emplace_back(id, std::string(name_start, p));
             }
