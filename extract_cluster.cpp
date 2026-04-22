@@ -129,11 +129,11 @@ static void write_record(std::FILE* out,
         else if (f == "fident")   std::fprintf(out, "%.3f", r.fident);
         else if (f == "alnlen")   { if (r.alnlen >= 0) std::fprintf(out, "%d", r.alnlen); else std::fputs("N/A", out); }
         else if (f == "evalue")   std::fprintf(out, "%g", r.evalue);
-        else if (f == "qstart")   std::fprintf(out, "%d", r.qstart);
-        else if (f == "qend")     std::fprintf(out, "%d", r.qend);
+        else if (f == "qstart")   std::fprintf(out, "%d", r.qstart + 1);
+        else if (f == "qend")     std::fprintf(out, "%d", r.qend + 1);
         else if (f == "qlen")     std::fprintf(out, "%d", r.qlen);
-        else if (f == "tstart")   std::fprintf(out, "%d", r.tstart);
-        else if (f == "tend")     std::fprintf(out, "%d", r.tend);
+        else if (f == "tstart")   std::fprintf(out, "%d", r.tstart + 1);
+        else if (f == "tend")     std::fprintf(out, "%d", r.tend + 1);
         else if (f == "tlen")     std::fprintf(out, "%d", r.tlen);
         else if (f == "qcov") {
             double qcov = r.qlen > 0 ? (double)(r.qend - r.qstart) / r.qlen : 0.0;
