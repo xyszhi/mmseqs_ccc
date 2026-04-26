@@ -10,3 +10,5 @@ find_package(Threads REQUIRED)
 target_link_libraries(mmseqs_ccc Threads::Threads)
 
 add_executable(extract_cluster extract_cluster.cpp)
+
+add_executable(extract_cluster_to_metis extract_cluster_to_metis.cpp)
