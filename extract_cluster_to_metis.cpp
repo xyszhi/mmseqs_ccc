@@ -60,6 +60,7 @@ int main(int argc, char* argv[]) {
     if (output_file.empty()) {
         output_file = input_file + ".graph";
     }
+    std::string map_file = output_file + ".id_map";
 
     // Step 1: read TSV, assign integer IDs, collect clusters
     std::unordered_map<std::string, int> name_to_id;
@@ -149,7 +150,26 @@ int main(int argc, char* argv[]) {
     }
     num_edges /= 2;
 
-    // Step 4: write METIS format
+    // Step 4: write id_map file (new_id -> original name)
+    {
+        // build reverse map: old_id -> name
+        std::vector<std::string> id_to_name(num_vertices_raw + 1);
+        for (const auto& kv : name_to_id) {
+            id_to_name[kv.second] = kv.first;
+        }
+        std::ofstream fmap(map_file);
+        if (!fmap) {
+            std::cerr << "Error: cannot write map file: " << map_file << "\n";
+            return 1;
+        }
+        fmap << "new_id\toriginal_name\n";
+        for (int i = 1; i <= num_vertices_raw; i++) {
+            if (new_id[i] == 0) continue;
+            fmap << new_id[i] << "\t" << id_to_name[i] << "\n";
+        }
+    }
+
+    // Step 5: write METIS format
     std::ofstream fout(output_file);
     if (!fout) {
         std::cerr << "Error: cannot write output file: " << output_file << "\n";
@@ -171,6 +191,7 @@ int main(int argc, char* argv[]) {
     std::cerr << "Done: " << num_vertices << " vertices, " << num_edges << " edges"
               << " (" << (full_clique ? "clique" : "star") << " topology)"
               << (isolated > 0 ? ", " + std::to_string(isolated) + " isolated nodes skipped" : "")
-              << " -> " << output_file << "\n";
+              << " -> " << output_file << "\n"
+              << "ID map: " << map_file << "\n";
     return 0;
 }
