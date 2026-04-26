@@ -86,10 +86,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    int num_vertices = (int)name_to_id.size();
+    int num_vertices_raw = (int)name_to_id.size();
 
     // Step 2: build adjacency lists (undirected, no self-loops, no duplicates)
-    std::vector<std::set<int>> adj(num_vertices + 1);
+    std::vector<std::set<int>> adj(num_vertices_raw + 1);
 
     for (auto& kv : clusters) {
         const std::string& rep = kv.first;
@@ -123,14 +123,33 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Step 3: compact renumbering — skip isolated vertices (no edges)
+    // old_id (1-based) -> new_id (1-based), 0 means isolated/dropped
+    std::vector<int> new_id(num_vertices_raw + 1, 0);
+    int num_vertices = 0;
+    for (int i = 1; i <= num_vertices_raw; i++) {
+        if (!adj[i].empty()) {
+            new_id[i] = ++num_vertices;
+        }
+    }
+
+    // remap adjacency lists to new IDs
+    std::vector<std::vector<int>> new_adj(num_vertices + 1);
+    for (int i = 1; i <= num_vertices_raw; i++) {
+        if (new_id[i] == 0) continue;
+        for (int nb : adj[i]) {
+            new_adj[new_id[i]].push_back(new_id[nb]);
+        }
+    }
+
     // count edges (each undirected edge counted once)
     long long num_edges = 0;
     for (int i = 1; i <= num_vertices; i++) {
-        num_edges += (long long)adj[i].size();
+        num_edges += (long long)new_adj[i].size();
     }
     num_edges /= 2;
 
-    // Step 3: write METIS format
+    // Step 4: write METIS format
     std::ofstream fout(output_file);
     if (!fout) {
         std::cerr << "Error: cannot write output file: " << output_file << "\n";
@@ -140,7 +159,7 @@ int main(int argc, char* argv[]) {
     fout << num_vertices << " " << num_edges << "\n";
     for (int i = 1; i <= num_vertices; i++) {
         bool first = true;
-        for (int nb : adj[i]) {
+        for (int nb : new_adj[i]) {
             if (!first) fout << " ";
             fout << nb;
             first = false;
@@ -148,8 +167,10 @@ int main(int argc, char* argv[]) {
         fout << "\n";
     }
 
+    int isolated = num_vertices_raw - num_vertices;
     std::cerr << "Done: " << num_vertices << " vertices, " << num_edges << " edges"
               << " (" << (full_clique ? "clique" : "star") << " topology)"
+              << (isolated > 0 ? ", " + std::to_string(isolated) + " isolated nodes skipped" : "")
               << " -> " << output_file << "\n";
     return 0;
 }
