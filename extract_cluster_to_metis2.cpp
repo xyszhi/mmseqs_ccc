@@ -340,7 +340,7 @@ static void write_metis(
 
     // Sort each vertex's neighbor list (for canonical METIS output)
     for (int64_t i = 1; i <= num_vertices_out; i++) {
-        std::sort(neighbors.begin() + (ptrdiff_t)offset[i], neighbors.begin() + (ptrdiff_t)offset[i + 1]);
+        std::sort(neighbors.begin() + (std::ptrdiff_t)offset[i], neighbors.begin() + (std::ptrdiff_t)offset[i + 1]);
     }
 
     // Write METIS adjacency lines
