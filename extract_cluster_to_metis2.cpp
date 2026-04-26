@@ -243,7 +243,7 @@ static void write_metis(
 
     // Pass A: compute degree of each vertex (to know neighbor list sizes)
     std::cerr << "  Computing vertex degrees...\n";
-    std::vector<int32_t> degree(num_vertices + 1, 0);
+    std::vector<int64_t> degree(num_vertices + 1, 0);
 
     {
         FILE* f = std::fopen(tmp_edge_file.c_str(), "rb");
@@ -311,7 +311,7 @@ static void write_metis(
     // edges are much fewer than rows (many members per cluster).
 
     // We'll build CSR using the degree array we already have.
-    std::vector<int32_t> offset(num_vertices_out + 2, 0);
+    std::vector<int64_t> offset(num_vertices_out + 2, 0);
     for (int64_t i = 1; i <= num_vertices; i++) {
         if (new_id[i] == 0) continue;
         offset[new_id[i] + 1] = degree[i];
@@ -321,7 +321,7 @@ static void write_metis(
     }
     int64_t total_adj = offset[num_vertices_out + 1];
     std::vector<int32_t> neighbors(total_adj);
-    std::vector<int32_t> pos(num_vertices_out + 1); // current fill position
+    std::vector<int64_t> pos(num_vertices_out + 1); // current fill position
     for (int64_t i = 1; i <= num_vertices_out; i++) pos[i] = offset[i];
 
     {
@@ -340,13 +340,13 @@ static void write_metis(
 
     // Sort each vertex's neighbor list (for canonical METIS output)
     for (int64_t i = 1; i <= num_vertices_out; i++) {
-        std::sort(neighbors.begin() + offset[i], neighbors.begin() + offset[i + 1]);
+        std::sort(neighbors.begin() + (ptrdiff_t)offset[i], neighbors.begin() + (ptrdiff_t)offset[i + 1]);
     }
 
     // Write METIS adjacency lines
     for (int64_t i = 1; i <= num_vertices_out; i++) {
         bool first = true;
-        for (int32_t j = offset[i]; j < offset[i + 1]; j++) {
+        for (int64_t j = offset[i]; j < offset[i + 1]; j++) {
             if (!first) fout << ' ';
             fout << neighbors[j];
             first = false;
