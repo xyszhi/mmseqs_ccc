@@ -16,3 +16,5 @@ add_executable(extract_cluster_to_metis extract_cluster_to_metis.cpp)
 add_executable(extract_cluster_to_metis2 extract_cluster_to_metis2.cpp)
 
 add_executable(check_metis_connectivity check_metis_connectivity.cpp)
+
+add_executable(check_tsv_connectivity check_tsv_connectivity.cpp)
