@@ -161,6 +161,8 @@ int main(int argc, char* argv[]) {
     // Output files opened on demand
     std::map<int32_t, std::ofstream*> out_files;
     std::string header_line;
+    std::ofstream* cross_ofs = nullptr;
+    std::string cross_path = out_dir + "/" + base + "_cross.tsv";
 
     auto get_outfile = [&](int32_t block) -> std::ofstream& {
         auto it = out_files.find(block);
@@ -178,27 +180,6 @@ int main(int argc, char* argv[]) {
         out_files[block] = ofs;
         std::cerr << "  Opened output: " << path << "\n";
         return *ofs;
-    };
-
-    // Cross-partition output file (lazy open)
-    std::string cross_path = out_dir + "/" + base + "_cross.tsv";
-    std::ofstream cross_ofs;
-    bool cross_opened = false;
-
-    auto get_cross_ofs = [&]() -> std::ofstream& {
-        if (!cross_opened) {
-            cross_ofs.open(cross_path);
-            if (!cross_ofs) {
-                std::cerr << "Error: cannot open cross output file: " << cross_path << "\n";
-                std::exit(1);
-            }
-            if (!header_line.empty()) {
-                cross_ofs << header_line << "\n";
-            }
-            cross_opened = true;
-            std::cerr << "  Opened output: " << cross_path << "\n";
-        }
-        return cross_ofs;
     };
 
     std::string line;
@@ -246,8 +227,17 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (bq != bt) {
-            get_cross_ofs() << line << "\n";
             skipped_cross++;
+            if (!cross_ofs) {
+                cross_ofs = new std::ofstream(cross_path);
+                if (!*cross_ofs) {
+                    std::cerr << "Error: cannot open cross output file: " << cross_path << "\n";
+                    std::exit(1);
+                }
+                std::cerr << "  Opened cross output: " << cross_path << "\n";
+                if (!header_line.empty()) *cross_ofs << header_line << "\n";
+            }
+            *cross_ofs << line << "\n";
             continue;
         }
 
@@ -255,19 +245,22 @@ int main(int argc, char* argv[]) {
         written++;
     }
 
+    // Close cross file
+    if (cross_ofs) {
+        cross_ofs->close();
+        delete cross_ofs;
+    }
+
     // Close all output files
     for (auto& kv : out_files) {
         kv.second->close();
         delete kv.second;
     }
-    if (cross_opened) cross_ofs.close();
 
     std::cerr << "Done.\n";
     std::cerr << "  Total data rows : " << total << "\n";
     std::cerr << "  Written         : " << written << "\n";
-    std::cerr << "  Skipped (cross) : " << skipped_cross;
-      if (cross_opened) std::cerr << " -> " << cross_path;
-      std::cerr << "\n";
+    std::cerr << "  Cross-partition : " << skipped_cross << " -> " << (skipped_cross > 0 ? cross_path : "(none)") << "\n";
     std::cerr << "  Skipped (unknown): " << skipped_unknown << "\n";
     std::cerr << "  Partitions output: " << out_files.size() << "\n";
 
