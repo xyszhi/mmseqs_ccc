@@ -133,15 +133,67 @@ struct IndexEntry {
     long long length;
 };
 
+static void print_usage(const char* prog) {
+    std::cout <<
+        "Usage: " << prog << " [OPTIONS] <db_prefix> <lookup_file>\n"
+        "\n"
+        "Positional arguments:\n"
+        "  <db_prefix>     MMseqs2 result DB prefix (e.g. result/filtered_db)\n"
+        "  <lookup_file>   Sequence lookup file     (e.g. result/protein_db.lookup)\n"
+        "\n"
+        "Options:\n"
+        "  -t, --threads <N>   Number of worker threads  [default: 8]\n"
+        "  -h, --help          Show this help message and exit\n"
+        "\n"
+        "Example:\n"
+        "  " << prog << " -t 16 test/filtered_db test/protein_db.lookup\n";
+}
+
 int main(int argc, char* argv[]) {
     g_start = Clock::now();
 
-    std::string db_prefix   = "test/filtered_db";
-    std::string lookup_path = "test/protein_db.lookup";
+    std::string db_prefix   = "";
+    std::string lookup_path = "";
     int num_threads = 8;
-    if (argc > 1) db_prefix   = argv[1];
-    if (argc > 2) lookup_path = argv[2];
-    if (argc > 3) num_threads = std::stoi(argv[3]);
+
+    // Parse arguments
+    std::vector<std::string> positional;
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        } else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
+            try {
+                num_threads = std::stoi(argv[++i]);
+                if (num_threads < 1) throw std::invalid_argument("must be >= 1");
+            } catch (const std::exception& e) {
+                std::cerr << "Error: invalid value for " << arg << ": " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (arg.size() > 2 && arg.substr(0, 10) == "--threads=") {
+            try {
+                num_threads = std::stoi(arg.substr(10));
+                if (num_threads < 1) throw std::invalid_argument("must be >= 1");
+            } catch (const std::exception& e) {
+                std::cerr << "Error: invalid value for --threads: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "Error: unknown option: " << arg << std::endl;
+            print_usage(argv[0]);
+            return 1;
+        } else {
+            positional.push_back(arg);
+        }
+    }
+
+    if (positional.size() >= 1) db_prefix   = positional[0];
+    if (positional.size() >= 2) lookup_path = positional[1];
+
+    // Apply defaults if not provided
+    if (db_prefix.empty())   db_prefix   = "test/filtered_db";
+    if (lookup_path.empty()) lookup_path = "test/protein_db.lookup";
 
     std::cout << "========================================" << std::endl;
     std::cout << "  mmseqs_ccc  Connected-Component Clustering" << std::endl;
