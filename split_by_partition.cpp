@@ -180,6 +180,27 @@ int main(int argc, char* argv[]) {
         return *ofs;
     };
 
+    // Cross-partition output file (lazy open)
+    std::string cross_path = out_dir + "/" + base + "_cross.tsv";
+    std::ofstream cross_ofs;
+    bool cross_opened = false;
+
+    auto get_cross_ofs = [&]() -> std::ofstream& {
+        if (!cross_opened) {
+            cross_ofs.open(cross_path);
+            if (!cross_ofs) {
+                std::cerr << "Error: cannot open cross output file: " << cross_path << "\n";
+                std::exit(1);
+            }
+            if (!header_line.empty()) {
+                cross_ofs << header_line << "\n";
+            }
+            cross_opened = true;
+            std::cerr << "  Opened output: " << cross_path << "\n";
+        }
+        return cross_ofs;
+    };
+
     std::string line;
     long long total = 0, written = 0, skipped_cross = 0, skipped_unknown = 0;
     bool first_line = true;
@@ -225,6 +246,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (bq != bt) {
+            get_cross_ofs() << line << "\n";
             skipped_cross++;
             continue;
         }
@@ -238,11 +260,14 @@ int main(int argc, char* argv[]) {
         kv.second->close();
         delete kv.second;
     }
+    if (cross_opened) cross_ofs.close();
 
     std::cerr << "Done.\n";
     std::cerr << "  Total data rows : " << total << "\n";
     std::cerr << "  Written         : " << written << "\n";
-    std::cerr << "  Skipped (cross) : " << skipped_cross << "\n";
+    std::cerr << "  Skipped (cross) : " << skipped_cross;
+      if (cross_opened) std::cerr << " -> " << cross_path;
+      std::cerr << "\n";
     std::cerr << "  Skipped (unknown): " << skipped_unknown << "\n";
     std::cerr << "  Partitions output: " << out_files.size() << "\n";
 
