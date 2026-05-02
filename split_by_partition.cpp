@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <map>
 #include <cstdlib>
+#include <cstring>
 
 // ---------------------------------------------------------------------------
 // Usage
