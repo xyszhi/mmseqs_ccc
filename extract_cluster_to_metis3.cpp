@@ -107,8 +107,13 @@ std::vector<std::string> pass2_extract_chunks(
     total_raw_edges = 0;
 
     while (get_two_strings(f, rep, mem)) {
-        int32_t u = name_to_id.at(rep);
-        int32_t v = name_to_id.at(mem);
+        auto it_rep = name_to_id.find(rep);
+        if (it_rep == name_to_id.end()) continue;
+        auto it_mem = name_to_id.find(mem);
+        if (it_mem == name_to_id.end()) continue;
+
+        int32_t u = it_rep->second;
+        int32_t v = it_mem->second;
         if (u == v) continue;
         if (u > v) std::swap(u, v);
 
@@ -136,6 +141,17 @@ struct MergeNode {
     bool operator>(const MergeNode& other) const { return edge > other.edge; }
 };
 
+// 辅助结构，方便获取并弹出堆顶
+template<typename T, typename Container, typename Compare>
+struct custom_priority_queue : std::priority_queue<T, Container, Compare> {
+    T pop_top() {
+        std::pop_heap(this->c.begin(), this->c.end(), this->comp);
+        T top = std::move(this->c.back());
+        this->c.pop_back();
+        return top;
+    }
+};
+
 // Pass 3: 多路归并并流式写入 METIS
 void merge_and_output(
     const std::vector<std::string>& chunk_files,
@@ -143,11 +159,13 @@ void merge_and_output(
     int64_t num_vertices,
     int64_t& unique_edges_out)
 {
-    std::priority_queue<MergeNode, std::vector<MergeNode>, std::greater<MergeNode>> pq;
+    custom_priority_queue<MergeNode, std::vector<MergeNode>, std::greater<MergeNode>> pq;
     std::vector<FILE*> handles;
     for (int i = 0; i < (int)chunk_files.size(); ++i) {
         FILE* f = std::fopen(chunk_files[i].c_str(), "rb");
         if (f) {
+            // 为读取分块文件设置 1MB 缓冲区
+            setvbuf(f, nullptr, _IOFBF, 1024 * 1024);
             handles.push_back(f);
             Edge e;
             if (std::fread(&e, sizeof(Edge), 1, f) == 1) {
@@ -156,20 +174,24 @@ void merge_and_output(
         }
     }
 
-    // 为了得到 METIS 的边数，我们需要先归并一次去重计数，或者提前知道。
-    // 简化处理：先归并到一个排序的二进制文件，同时计数。
+    // 为了得到 METIS 的边数，我们需要先归并一次去重计数。
+    // 优化：在归并时直接统计度数，减少后续重读文件的次数。
     std::string sorted_bin = output_file + ".sorted.tmp";
     FILE* fsorted = std::fopen(sorted_bin.c_str(), "wb");
+    if (!fsorted) throw std::runtime_error("Cannot open sorted tmp file");
+
     unique_edges_out = 0;
     Edge last_edge = {0, 0};
+    std::vector<int64_t> degree(num_vertices + 1, 0);
 
     while (!pq.empty()) {
-        MergeNode top = pq.top();
-        pq.pop();
+        MergeNode top = pq.pop_top();
 
         if (!(top.edge == last_edge)) {
             std::fwrite(&top.edge, sizeof(Edge), 1, fsorted);
             unique_edges_out++;
+            degree[top.edge.u]++;
+            degree[top.edge.v]++;
             last_edge = top.edge;
         }
 
@@ -181,48 +203,54 @@ void merge_and_output(
     for (auto h : handles) std::fclose(h);
     std::fclose(fsorted);
 
-    // 最后一步：流式输出 METIS
-    // 现在的 fsorted 是全局排序的 (u, v) 且 u < v。
-    // METIS 需要每个节点的邻接表。我们需要把每个 (u, v) 变成 u->v 和 v->u。
-    // 这又涉及一次排序... 或者使用两倍空间的外部排序。
-    // 方案改进：在归并时直接输出所有双向边到另一个外部排序过程，或者在内存足够时处理。
-    // 由于用户有 640GB，我们可以在此处利用内存构建邻接表。
-    
-    std::cerr << "Unique edges: " << unique_edges_out << ". Writing METIS...\n";
-    
-    // 内存写邻接表：如果 2*E*4 字节 < 640GB，则可行。
-    // 180亿边 = 144GB。
-    std::vector<int64_t> degree(num_vertices + 1, 0);
-    fsorted = std::fopen(sorted_bin.c_str(), "rb");
-    Edge e;
-    while (std::fread(&e, sizeof(Edge), 1, fsorted) == 1) {
-        degree[e.u]++;
-        degree[e.v]++;
-    }
-    
+    std::cerr << "Unique edges: " << unique_edges_out << ". Building adjacency list in memory...\n";
+
     std::vector<int64_t> offset(num_vertices + 2, 0);
     for (int64_t i = 1; i <= num_vertices; i++) {
         offset[i+1] = offset[i] + degree[i];
     }
-    
+    degree.clear(); degree.shrink_to_fit(); // 释放不再需要的内存
+
     std::vector<int32_t> neighbors(offset[num_vertices+1]);
     std::vector<int64_t> current_pos = offset;
-    std::rewind(fsorted);
+
+    fsorted = std::fopen(sorted_bin.c_str(), "rb");
+    if (!fsorted) throw std::runtime_error("Cannot open sorted tmp file for second pass");
+    setvbuf(fsorted, nullptr, _IOFBF, 8 * 1024 * 1024); // 8MB 缓冲区
+    Edge e;
     while (std::fread(&e, sizeof(Edge), 1, fsorted) == 1) {
         neighbors[current_pos[e.u]++] = e.v;
         neighbors[current_pos[e.v]++] = e.u;
     }
     std::fclose(fsorted);
 
-    std::ofstream fout(output_file);
-    fout << num_vertices << " " << unique_edges_out << "\n";
+    std::cerr << "Writing METIS output file...\n";
+    FILE* out_f = std::fopen(output_file.c_str(), "w");
+    if (!out_f) throw std::runtime_error("Cannot open output file: " + output_file);
+    
+    // 设置一个较大的缓冲区提升写入效率 (8MB)
+    std::vector<char> write_buf(8 * 1024 * 1024);
+    std::setvbuf(out_f, write_buf.data(), _IOFBF, write_buf.size());
+
+    std::fprintf(out_f, "%lld %lld\n", (long long)num_vertices, (long long)unique_edges_out);
     for (int64_t i = 1; i <= num_vertices; i++) {
-        std::sort(neighbors.begin() + offset[i], neighbors.begin() + offset[i+1]);
-        for (int64_t j = offset[i]; j < offset[i+1]; j++) {
-            fout << neighbors[j] << (j == offset[i+1]-1 ? "" : " ");
+        int64_t start = offset[i];
+        int64_t end = offset[i+1];
+        if (start < end) {
+            std::sort(neighbors.begin() + start, neighbors.begin() + end);
+            for (int64_t j = start; j < end; j++) {
+                if (j > start) std::fputc(' ', out_f);
+                // 进一步加速：手动转换整数
+                char buf[16];
+                int len = std::snprintf(buf, sizeof(buf), "%d", neighbors[j]);
+                std::fwrite(buf, 1, len, out_f);
+            }
         }
-        fout << "\n";
+        std::fputc('\n', out_f);
+        if (i % 100000 == 0) std::cerr << "\rWriting progress: " << i << " / " << num_vertices << std::flush;
     }
+    std::cerr << "\n";
+    std::fclose(out_f);
 }
 
 int main(int argc, char* argv[]) {
