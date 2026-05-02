@@ -51,10 +51,11 @@ static bool get_two_strings(FILE* f, std::string& s1, std::string& s2) {
 }
 
 void print_usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " -i input.tsv [-o output.graph] [--tmpdir dir] [--mem-limit GB]\n"
+    std::cerr << "Usage: " << prog << " -i input.tsv [-o output.graph] [--map id_map.tsv] [--tmpdir dir] [--mem-limit GB]\n"
               << "Options:\n"
               << "  -i, --input    Input TSV file (representative member)\n"
               << "  -o, --output   Output METIS file\n"
+              << "  --map          Output ID to original name mapping file\n"
               << "  --tmpdir       Directory for temporary files\n"
               << "  --mem-limit    Memory limit for sorting in GB (default: 32)\n";
 }
@@ -156,9 +157,29 @@ struct custom_priority_queue : std::priority_queue<T, Container, Compare> {
 void merge_and_output(
     const std::vector<std::string>& chunk_files,
     const std::string& output_file,
+    const std::string& map_file,
+    const std::unordered_map<std::string, int32_t>& name_to_id,
     int64_t num_vertices,
     int64_t& unique_edges_out)
 {
+    // If map_file is provided, write the id_map
+    if (!map_file.empty()) {
+        std::cerr << "Writing ID map to " << map_file << "...\n";
+        std::vector<std::string> id_to_name(num_vertices + 1);
+        for (const auto& kv : name_to_id) {
+            if (kv.second >= 1 && kv.second <= num_vertices) {
+                id_to_name[kv.second] = kv.first;
+            }
+        }
+        FILE* fmap = std::fopen(map_file.c_str(), "w");
+        if (!fmap) throw std::runtime_error("Cannot open map file for writing: " + map_file);
+        std::fprintf(fmap, "new_id\toriginal_name\n");
+        for (int32_t i = 1; i <= num_vertices; i++) {
+            std::fprintf(fmap, "%d\t%s\n", i, id_to_name[i].c_str());
+        }
+        std::fclose(fmap);
+    }
+
     custom_priority_queue<MergeNode, std::vector<MergeNode>, std::greater<MergeNode>> pq;
     std::vector<FILE*> handles;
     for (int i = 0; i < (int)chunk_files.size(); ++i) {
@@ -254,13 +275,14 @@ void merge_and_output(
 }
 
 int main(int argc, char* argv[]) {
-    std::string input, output, tmpdir = ".";
+    std::string input, output, map_file, tmpdir = ".";
     size_t mem_limit_gb = 32;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if ((arg == "-i" || arg == "--input") && i + 1 < argc) input = argv[++i];
         else if ((arg == "-o" || arg == "--output") && i + 1 < argc) output = argv[++i];
+        else if (arg == "--map" && i + 1 < argc) map_file = argv[++i];
         else if (arg == "--tmpdir" && i + 1 < argc) tmpdir = argv[++i];
         else if (arg == "--mem-limit" && i + 1 < argc) mem_limit_gb = std::stoll(argv[++i]);
     }
@@ -279,7 +301,7 @@ int main(int argc, char* argv[]) {
 
         std::cerr << "Pass 3: Merging & Writing METIS...\n";
         int64_t unique_e;
-        merge_and_output(chunks, output, num_v, unique_e);
+        merge_and_output(chunks, output, map_file, name_to_id, num_v, unique_e);
 
         // Cleanup chunks
         for (const auto& f : chunks) std::remove(f.c_str());
