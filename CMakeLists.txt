@@ -11,7 +11,6 @@ target_link_libraries(mmseqs_ccc Threads::Threads)
 
 add_executable(extract_cluster extract_cluster.cpp)
 
-add_executable(extract_cluster_to_metis extract_cluster_to_metis2.cpp)
 add_executable(extract_cluster_to_metis2 extract_cluster_to_metis2.cpp)
 add_executable(extract_cluster_to_metis3 extract_cluster_to_metis3.cpp)
 
