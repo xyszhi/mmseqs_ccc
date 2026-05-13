@@ -19,3 +19,5 @@ add_executable(check_metis_connectivity check_metis_connectivity.cpp)
 add_executable(check_tsv_connectivity check_tsv_connectivity.cpp)
 
 add_executable(split_by_partition split_by_partition.cpp)
+add_executable(split_by_connectivity split_by_connectivity.cpp)
+target_link_libraries(split_by_connectivity Threads::Threads)
