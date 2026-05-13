@@ -6,6 +6,7 @@
 #include <numeric>
 #include <algorithm>
 #include <sys/stat.h>
+#include <cerrno>
 #include <getopt.h>
 #include <thread>
 #include <mutex>
@@ -107,7 +108,10 @@ int main(int argc, char* argv[]) {
             case 'i': input_path = optarg; break;
             case 'o': output_dir = optarg; break;
             case 's': sep = optarg; if (sep == "\\t") sep = "\t"; break;
-            case 't': num_threads = std::stoi(optarg); break;
+            case 't': try { num_threads = std::stoi(optarg); }
+                      catch (...) { std::cerr << "Error: invalid value for --threads\n"; return 1; }
+                      if (num_threads < 1) { std::cerr << "Error: --threads must be >= 1\n"; return 1; }
+                      break;
             case 'h': print_usage(argv[0]); return 0;
             default: print_usage(argv[0]); return 1;
         }
@@ -118,7 +122,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    mkdir(output_dir.c_str(), 0755);
+    if (sep.empty()) {
+        std::cerr << "Error: separator cannot be empty." << std::endl;
+        return 1;
+    }
+
+    if (mkdir(output_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+        std::cerr << "Error: cannot create output directory: " << output_dir << std::endl;
+        return 1;
+    }
 
     // -------------------------------------------------------------------------
     // Pass 1: 串行发现所有唯一节点，建立 name -> id 映射
@@ -238,7 +250,13 @@ int main(int argc, char* argv[]) {
                     std::lock_guard<std::mutex> lock(comp_locks[cid]);
                     std::string out_file = output_dir + "/component_" + std::to_string(cid) + ".tsv";
                     std::ofstream out(out_file, std::ios::app);
-                    if (out.is_open()) out << kv.second;
+                    if (!out.is_open()) {
+                        std::cerr << "Error: cannot open output file: " << out_file << std::endl;
+                    } else {
+                        out << kv.second;
+                        if (out.fail())
+                            std::cerr << "Error: write failed for: " << out_file << std::endl;
+                    }
                 }
                 thread_buffers.clear();
                 buffered_bytes = 0;
