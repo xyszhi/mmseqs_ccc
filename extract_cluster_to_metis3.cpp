@@ -37,31 +37,52 @@ static inline bool edge_less(const Edge& a, const Edge& b) {
     return a.v < b.v;
 }
 
-// 快速解析一行两个字符串 (rep, mem)
-static bool get_two_strings(FILE* f, std::string& s1, std::string& s2) {
-    static char buf[4096];
+// 快速解析一行两个字符串 (rep, mem)，按指定分隔符分割
+static bool get_two_strings(FILE* f, std::string& s1, std::string& s2, const std::string& sep = "\t") {
+    static char buf[16384]; // 增大缓冲区以防极长节点名
     if (!std::fgets(buf, sizeof(buf), f)) return false;
-    if (buf[0] == '\n' || buf[0] == '\r' || buf[0] == '%') return get_two_strings(f, s1, s2);
+    
+    // 跳过空行或注释
+    if (buf[0] == '\n' || buf[0] == '\r' || buf[0] == '%') return get_two_strings(f, s1, s2, sep);
 
-    char c1[2048], c2[2048];
-    if (std::sscanf(buf, "%s %s", c1, c2) != 2) return false;
-    s1 = c1;
-    s2 = c2;
+    std::string line(buf);
+    // 去除行尾换换行符
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+        line.pop_back();
+    }
+    if (line.empty()) return get_two_strings(f, s1, s2, sep);
+
+    size_t pos = line.find(sep);
+    if (pos == std::string::npos) return get_two_strings(f, s1, s2, sep); // 跳过无效行并继续
+    
+    s1 = line.substr(0, pos);
+    
+    // 找到第二个分隔符（如果有），模拟 split_by_connectivity 的逻辑
+    size_t pos2 = line.find(sep, pos + sep.size());
+    if (pos2 == std::string::npos) {
+        s2 = line.substr(pos + sep.size());
+    } else {
+        s2 = line.substr(pos + sep.size(), pos2 - (pos + sep.size()));
+    }
+
+    if (s1.empty() || s2.empty()) return get_two_strings(f, s1, s2, sep); // 模拟 split_by_connectivity: !qn.empty() && !tn.empty()
+
     return true;
 }
 
 void print_usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " -i input.tsv [-o output.graph] [--map id_map.tsv] [--tmpdir dir] [--mem-limit GB]\n"
+    std::cerr << "Usage: " << prog << " -i input.tsv [-o output.graph] [--map id_map.tsv] [--tmpdir dir] [--mem-limit GB] [--sep char]\n"
               << "Options:\n"
               << "  -i, --input    Input TSV file (representative member)\n"
               << "  -o, --output   Output METIS file\n"
               << "  --map          Output ID to original name mapping file\n"
               << "  --tmpdir       Directory for temporary files\n"
-              << "  --mem-limit    Memory limit for sorting in GB (default: 32)\n";
+              << "  --mem-limit    Memory limit for sorting in GB (default: 32)\n"
+              << "  --sep          Separator (default: \\t)\n";
 }
 
 // Pass 1: 分配 ID
-int64_t pass1_assign_ids(const std::string& input_file, std::unordered_map<std::string, int32_t>& name_to_id) {
+int64_t pass1_assign_ids(const std::string& input_file, std::unordered_map<std::string, int32_t>& name_to_id, const std::string& sep) {
     FILE* f = std::fopen(input_file.c_str(), "r");
     if (!f) throw std::runtime_error("Cannot open input: " + input_file);
 
@@ -69,9 +90,9 @@ int64_t pass1_assign_ids(const std::string& input_file, std::unordered_map<std::
     int32_t next_id = 1;
     name_to_id.reserve(20000000); // 预留 2000 万空间，防止 1100 万节点触发 rehash
 
-    while (get_two_strings(f, rep, mem)) {
+    while (get_two_strings(f, rep, mem, sep)) {
         for (const std::string& s : {rep, mem}) {
-            if (name_to_id.find(s) == name_to_id.end()) {
+            if (!s.empty() && name_to_id.find(s) == name_to_id.end()) {
                 name_to_id[s] = next_id++;
             }
         }
@@ -96,6 +117,7 @@ std::vector<std::string> pass2_extract_chunks(
     const std::unordered_map<std::string, int32_t>& name_to_id,
     const std::string& tmpdir,
     size_t mem_limit_bytes,
+    const std::string& sep,
     int64_t& total_raw_edges)
 {
     FILE* f = std::fopen(input_file.c_str(), "r");
@@ -107,7 +129,7 @@ std::vector<std::string> pass2_extract_chunks(
     std::vector<std::string> chunk_files;
     total_raw_edges = 0;
 
-    while (get_two_strings(f, rep, mem)) {
+    while (get_two_strings(f, rep, mem, sep)) {
         auto it_rep = name_to_id.find(rep);
         if (it_rep == name_to_id.end()) continue;
         auto it_mem = name_to_id.find(mem);
@@ -276,6 +298,7 @@ void merge_and_output(
 
 int main(int argc, char* argv[]) {
     std::string input, output, map_file, tmpdir = ".";
+    std::string sep = "\t";
     size_t mem_limit_gb = 32;
 
     for (int i = 1; i < argc; i++) {
@@ -285,6 +308,10 @@ int main(int argc, char* argv[]) {
         else if (arg == "--map" && i + 1 < argc) map_file = argv[++i];
         else if (arg == "--tmpdir" && i + 1 < argc) tmpdir = argv[++i];
         else if (arg == "--mem-limit" && i + 1 < argc) mem_limit_gb = std::stoll(argv[++i]);
+        else if (arg == "--sep" && i + 1 < argc) {
+            sep = argv[++i];
+            if (sep == "\\t") sep = "\t";
+        }
     }
 
     if (input.empty()) { print_usage(argv[0]); return 1; }
@@ -293,11 +320,11 @@ int main(int argc, char* argv[]) {
     try {
         std::unordered_map<std::string, int32_t> name_to_id;
         std::cerr << "Pass 1: Assigning IDs...\n";
-        int64_t num_v = pass1_assign_ids(input, name_to_id);
+        int64_t num_v = pass1_assign_ids(input, name_to_id, sep);
 
         std::cerr << "Pass 2: Extracting & Sorting chunks...\n";
         int64_t total_raw;
-        auto chunks = pass2_extract_chunks(input, name_to_id, tmpdir, mem_limit_gb * 1024LL * 1024LL * 1024LL, total_raw);
+        auto chunks = pass2_extract_chunks(input, name_to_id, tmpdir, mem_limit_gb * 1024LL * 1024LL * 1024LL, sep, total_raw);
 
         std::cerr << "Pass 3: Merging & Writing METIS...\n";
         int64_t unique_e;
