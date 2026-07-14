@@ -126,9 +126,10 @@ int main(int argc, char* argv[]) {
     int64_t edges_seen = 0;
 
     while (std::getline(fin, line)) {
-        if (line.empty() || line[0] == '%') continue;
+        if (!line.empty() && line[0] == '%') continue;  // 只跳过注释行，空行代表孤立节点不能跳过
         ++vertex;
         if (vertex > num_vertices) break;
+        if (line.empty()) continue;  // 孤立节点：vertex 已递增，跳过邻居解析
 
         std::istringstream ss(line);
         int32_t nb;

@@ -77,12 +77,13 @@ static bool parse_edge(const std::string& line, const std::string& sep,
 }
 
 void print_usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " --input <tsv_file> --output <out_dir> [--sep <sep>] [--threads <n>]\n"
+    std::cerr << "Usage: " << prog << " --input <tsv_file> --output <out_dir> [--sep <sep>] [--threads <n>] [--prefix <prefix>]\n"
               << "Options:\n"
               << "  -i, --input <file>    Input TSV file\n"
               << "  -o, --output <dir>    Output directory\n"
               << "  -s, --sep <char>      Separator (default: \\t)\n"
               << "  -t, --threads <int>   Number of threads (default: hardware_concurrency)\n"
+              << "  -p, --prefix <str>    Output file prefix (default: component_)\n"
               << "  -h, --help            Show this help message\n";
 }
 
@@ -90,6 +91,7 @@ int main(int argc, char* argv[]) {
     std::string input_path;
     std::string output_dir;
     std::string sep = "\t";
+    std::string prefix = "component_";
     int num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0) num_threads = 8;
 
@@ -98,12 +100,13 @@ int main(int argc, char* argv[]) {
         {"output",  required_argument, 0, 'o'},
         {"sep",     required_argument, 0, 's'},
         {"threads", required_argument, 0, 't'},
+        {"prefix",  required_argument, 0, 'p'},
         {"help",    no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "i:o:s:t:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:o:s:t:p:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'i': input_path = optarg; break;
             case 'o': output_dir = optarg; break;
@@ -112,6 +115,7 @@ int main(int argc, char* argv[]) {
                       catch (...) { std::cerr << "Error: invalid value for --threads\n"; return 1; }
                       if (num_threads < 1) { std::cerr << "Error: --threads must be >= 1\n"; return 1; }
                       break;
+            case 'p': prefix = optarg; break;
             case 'h': print_usage(argv[0]); return 0;
             default: print_usage(argv[0]); return 1;
         }
@@ -136,6 +140,7 @@ int main(int argc, char* argv[]) {
     // Pass 1: 串行发现所有唯一节点，建立 name -> id 映射
     // -------------------------------------------------------------------------
     std::cerr << "Pass 1/2: Discovering unique nodes..." << std::endl;
+    std::string header_line;  // 保存表头行
     std::unordered_map<std::string, int> name2id;
     {
         std::ifstream infile(input_path);
@@ -145,7 +150,13 @@ int main(int argc, char* argv[]) {
         }
         std::string line;
         int node_count = 0;
+        bool first_line = true;
         while (std::getline(infile, line)) {
+            if (first_line) {
+                first_line = false;
+                header_line = line;  // 无条件将第一行视为表头
+                continue;
+            }
             std::string qn, tn;
             if (!parse_edge(line, sep, qn, tn)) continue;
             if (name2id.find(qn) == name2id.end()) name2id[qn] = node_count++;
@@ -173,6 +184,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         std::mutex file_mtx;
+        // 跳过表头行
+        { std::string skip; std::getline(infile, skip); }
         auto worker = [&]() {
             std::string line;
             std::vector<std::string> local_lines;
@@ -237,6 +250,24 @@ int main(int argc, char* argv[]) {
         std::mutex file_mtx;
         std::vector<std::mutex> comp_locks(comp_count);
 
+        // 如果有表头，预先为每个 component 文件写入表头，并跳过输入文件的表头行
+        if (!header_line.empty()) {
+            for (int cid = 0; cid < comp_count; ++cid) {
+                std::string out_file = output_dir + "/" + prefix + std::to_string(cid) + ".tsv";
+                std::ofstream out(out_file, std::ios::trunc);
+                if (!out.is_open()) {
+                    std::cerr << "Error: cannot open output file: " << out_file << std::endl;
+                } else {
+                    std::string hdr = header_line;
+                    if (!hdr.empty() && hdr.back() == '\r') hdr.back() = '\n';
+                    else hdr += '\n';
+                    out << hdr;
+                }
+            }
+            // 跳过表头行，避免将其当作数据行写入输出文件
+            { std::string skip; std::getline(infile, skip); }
+        }
+
         auto worker = [&]() {
             std::string line;
             std::vector<std::string> local_lines;
@@ -248,7 +279,7 @@ int main(int argc, char* argv[]) {
                 for (auto& kv : thread_buffers) {
                     int cid = kv.first;
                     std::lock_guard<std::mutex> lock(comp_locks[cid]);
-                    std::string out_file = output_dir + "/component_" + std::to_string(cid) + ".tsv";
+                    std::string out_file = output_dir + "/" + prefix + std::to_string(cid) + ".tsv";
                     std::ofstream out(out_file, std::ios::app);
                     if (!out.is_open()) {
                         std::cerr << "Error: cannot open output file: " << out_file << std::endl;
